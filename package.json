@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "elm-review": "^2.10.3",
+    "elm-test-rs": "^3.0.0-5"
+  }
+}
