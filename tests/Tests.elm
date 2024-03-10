@@ -6,6 +6,7 @@ import Expect
 import Hex.Convert
 import ID3 exposing (Frame(..))
 import Sources.Bauchamp128
+import Sources.CelestePrologue
 import Test exposing (Test, describe, test)
 
 
@@ -35,6 +36,9 @@ suite =
             , Title "Tom kick and noise"
             , LeadArtist "Bauchamp"
             ]
+        , tagsTest "Celeste - Prologue"
+            Sources.CelestePrologue.raw
+            []
         ]
 
 
