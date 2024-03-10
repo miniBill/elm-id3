@@ -2,10 +2,17 @@ module ID3 exposing (Frame(..), ID3v2, tryReadV2)
 
 import Bitwise
 import Bytes exposing (Bytes)
+import Bytes.Encode
 import Bytes.Parser as Parser exposing (Parser)
 import Dict exposing (Dict)
 import Hex.Convert
 import Iso8859.Part1
+import String.UTF16
+
+
+type Version
+    = ID3v2_3
+    | ID3v2_4
 
 
 type alias ID3v2 =
@@ -65,7 +72,7 @@ type Frame
     | OriginalAlbum String
     | UnknownFrame
         { id : String
-        , raw : String
+        , raw : Bytes
         }
 
 
@@ -78,6 +85,7 @@ type alias Flags =
 
 type alias Header =
     { flags : Flags
+    , version : Version
 
     -- size does not include the header itself, nor the optional footer
     , size : Int
@@ -88,8 +96,9 @@ type alias Header =
 
 
 log : String -> a -> a
-log _ value =
-    value
+log =
+    -- always identity
+    Debug.log
 
 
 tryReadV2 : Bytes -> Result String ID3v2
@@ -132,7 +141,7 @@ v2Parser =
                                         |> Parser.succeed
 
                                 else
-                                    parseFrame
+                                    frameParser header.version
                                         |> Parser.map
                                             (\( frame, frameLength ) ->
                                                 ( remaining - frameLength
@@ -156,19 +165,20 @@ v2Parser =
 
 headerParser : Parser context String Header
 headerParser =
-    Parser.succeed Tuple.pair
+    Parser.succeed (\version flags size -> ( version, flags, size ))
         |> Parser.ignore identifierParser
-        |> Parser.ignore majorVersionParser
+        |> Parser.keep majorVersionParser
         |> Parser.ignore minorVersionParser
         |> Parser.keep flagsParser
         |> Parser.keep syncsafeInt32Parser
         |> Parser.map (log "header")
         |> Parser.andThen
-            (\( flags, size ) ->
+            (\( version, flags, size ) ->
                 if flags.extendedHeader then
                     Parser.succeed
                         (\extended ->
-                            { flags = flags
+                            { version = version
+                            , flags = flags
                             , size = size
                             , innerSize = size - extended.size
                             }
@@ -177,7 +187,8 @@ headerParser =
 
                 else
                     Parser.succeed
-                        { flags = flags
+                        { version = version
+                        , flags = flags
                         , size = size
                         , innerSize = size
                         }
@@ -197,16 +208,20 @@ identifierParser =
             )
 
 
-majorVersionParser : Parser context String ()
+majorVersionParser : Parser context String Version
 majorVersionParser =
     Parser.unsignedInt8
         |> validate
             (\major ->
-                if major == 4 then
-                    Ok ()
+                case major of
+                    3 ->
+                        Ok ID3v2_3
 
-                else
-                    Err <| "This library currently supports ID3v2.4 only, found ID3v2." ++ String.fromInt major
+                    4 ->
+                        Ok ID3v2_4
+
+                    _ ->
+                        Err <| "This library currently supports ID3v2.3 and ID3v2.4 only, found ID3v2." ++ String.fromInt major
             )
 
 
@@ -257,8 +272,8 @@ extendedHeader =
 ------------------------------------------------------------------------------------------------------------
 
 
-parseFrame : Parser context String ( Frame, Int )
-parseFrame =
+frameParser : Version -> Parser context String ( Frame, Int )
+frameParser version =
     Parser.succeed
         (\id size flags ->
             log "Parsing frame"
@@ -286,49 +301,66 @@ parseFrame =
                     ( _, lowerFlag ) =
                         flags
                 in
-                if hasBit 3 lowerFlag then
-                    Parser.fail "Compressed frames are not supported yet"
+                case version of
+                    ID3v2_3 ->
+                        if hasBit 7 lowerFlag then
+                            Parser.fail "Compressed frames are not supported yet"
 
-                else if hasBit 2 lowerFlag then
-                    Parser.fail "Encrypted frames are not supported yet"
+                        else if hasBit 6 lowerFlag then
+                            Parser.fail "Encrypted frames are not supported yet"
 
-                else if hasBit 1 lowerFlag then
-                    Parser.fail "Unsynchronisation is not supported yet"
+                        else
+                            innerFrameParser id size
+                                |> Parser.map (\frame -> ( frame, size + 10 ))
 
-                else if hasBit 0 lowerFlag then
-                    Parser.fail "Data length indicator not supported yet"
+                    ID3v2_4 ->
+                        if hasBit 3 lowerFlag then
+                            Parser.fail "Compressed frames are not supported yet"
 
-                else
-                    (case Dict.get id textInformationFrames of
-                        Just ctor ->
-                            Parser.map ctor (prefixedStringParser size)
+                        else if hasBit 2 lowerFlag then
+                            Parser.fail "Encrypted frames are not supported yet"
 
-                        Nothing ->
-                            case id of
-                                "COMM" ->
-                                    Parser.succeed
-                                        (\language value ->
-                                            Comment
-                                                { language = language
-                                                , value = value
-                                                }
-                                        )
-                                        |> Parser.keep (prefixedStringParser 4)
-                                        |> Parser.keep (prefixedStringParser <| size - 4)
+                        else if hasBit 1 lowerFlag then
+                            Parser.fail "Unsynchronisation is not supported yet"
 
-                                _ ->
-                                    prefixedStringParser size
-                                        |> Parser.map
-                                            (\raw ->
-                                                { id = id
-                                                , raw = raw
-                                                }
-                                                    |> UnknownFrame
-                                            )
-                    )
-                        |> Parser.map (\frame -> ( frame, size + 10 ))
+                        else if hasBit 0 lowerFlag then
+                            Parser.fail "Data length indicator not supported yet"
+
+                        else
+                            innerFrameParser id size
+                                |> Parser.map (\frame -> ( frame, size + 10 ))
             )
         |> Parser.map (\frame -> log "Parsed frame" frame)
+
+
+innerFrameParser : String -> Int -> Parser context String Frame
+innerFrameParser id size =
+    case Dict.get id textInformationFrames of
+        Just ctor ->
+            Parser.map ctor (prefixedStringParser size)
+
+        Nothing ->
+            case id of
+                "COMM" ->
+                    Parser.succeed
+                        (\language value ->
+                            Comment
+                                { language = language
+                                , value = value
+                                }
+                        )
+                        |> Parser.keep (prefixedStringParser 4)
+                        |> Parser.keep (prefixedStringParser <| size - 4)
+
+                _ ->
+                    Parser.bytes size
+                        |> Parser.map
+                            (\raw ->
+                                { id = id
+                                , raw = raw
+                                }
+                                    |> UnknownFrame
+                            )
 
 
 textInformationFrames : Dict String (String -> Frame)
@@ -415,10 +447,31 @@ prefixedStringParser length =
                                 )
 
                     1 ->
-                        Parser.fail "UTF-16 is not supported for strings yet"
+                        Parser.succeed Tuple.pair
+                            |> Parser.keep (Parser.unsignedInt16 Bytes.LE)
+                            |> Parser.keep (Parser.bytes <| length - 5)
+                            |> Parser.skip 2
+                            |> Parser.andThen
+                                (\( bom, bytes ) ->
+                                    let
+                                        endianess : Bytes.Endianness
+                                        endianess =
+                                            if bom == 0xFEFF then
+                                                Bytes.LE
+
+                                            else
+                                                Bytes.BE
+                                    in
+                                    case String.UTF16.toString endianess bytes of
+                                        Just decoded ->
+                                            Parser.succeed decoded
+
+                                        Nothing ->
+                                            Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
+                                )
 
                     2 ->
-                        Parser.fail "UTF-16 [BTE] is not supported for strings yet"
+                        Parser.fail "UTF-16 [BE] is not supported for strings yet"
 
                     3 ->
                         Parser.string (length - 1)
@@ -463,7 +516,12 @@ syncsafeByteParser =
                     Ok byte
 
                 else
-                    Err "Byte should have been less than 0x80"
+                    let
+                        byteString : String
+                        byteString =
+                            Hex.Convert.toString <| Bytes.Encode.encode <| Bytes.Encode.unsignedInt8 byte
+                    in
+                    Err <| "Byte should have been less than 0x80: " ++ byteString
             )
 
 
