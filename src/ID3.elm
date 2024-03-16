@@ -119,6 +119,8 @@ type Context
     | InnerFrameContext String
     | COMMLanguageContext
     | COMMValueContext
+    | FirstStringContext
+    | SecondStringContext
 
 
 log : String -> a -> a
@@ -186,6 +188,12 @@ contextToString { label } =
 
         COMMValueContext ->
             "Value"
+
+        FirstStringContext ->
+            "First string"
+
+        SecondStringContext ->
+            "Second string"
 
 
 v2Parser : Parser Context String ID3v2
@@ -621,7 +629,7 @@ stringParserOfKind kind length =
         UTF16 ->
             Parser.succeed Tuple.pair
                 |> Parser.keep (Parser.unsignedInt16 Bytes.LE)
-                |> Parser.keep (Parser.bytes <| length - 4)
+                |> Parser.keep (Parser.bytes <| length - 2)
                 |> Parser.andThen
                     (\( bom, bytes ) ->
                         let
@@ -640,7 +648,6 @@ stringParserOfKind kind length =
                             Nothing ->
                                 Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
                     )
-                |> Parser.skip 2
 
         UTF16BE ->
             Parser.fail "UTF-16 [BE] is not supported for strings yet"
@@ -650,6 +657,8 @@ stringParserOfKind kind length =
     )
         |> Parser.map
             (\str ->
+                -- There are subtle differences in frames, versions, ...
+                -- We could spend a lot of time getting it right, or we can just do this
                 if String.endsWith "\u{0000}" str then
                     String.dropRight 1 str
 
@@ -658,7 +667,7 @@ stringParserOfKind kind length =
             )
 
 
-twoStringsParserOfKind : StringKind -> Int -> Parser context String ( String, String )
+twoStringsParserOfKind : StringKind -> Int -> Parser Context String ( String, String )
 twoStringsParserOfKind kind length =
     let
         zeroSize : Int
@@ -695,8 +704,8 @@ twoStringsParserOfKind kind length =
                                     zeroParser
                                         |> Parser.map
                                             (\int ->
-                                                if int == 0 then
-                                                    Parser.Done offset
+                                                if int == 0 || offset == length then
+                                                    Parser.Done <| Debug.log "zero at offset" <| offset * zeroSize
 
                                                 else
                                                     Parser.Loop (offset + 1)
@@ -709,9 +718,15 @@ twoStringsParserOfKind kind length =
         |> Parser.andThen
             (\firstZero ->
                 Parser.succeed Tuple.pair
-                    |> Parser.keep (stringParserOfKind kind firstZero)
+                    |> Parser.keep
+                        (stringParserOfKind kind firstZero
+                            |> Parser.inContext FirstStringContext
+                        )
                     |> Parser.skip zeroSize
-                    |> Parser.keep (stringParserOfKind kind (length - firstZero - 1))
+                    |> Parser.keep
+                        (stringParserOfKind kind (length - firstZero - zeroSize)
+                            |> Parser.inContext SecondStringContext
+                        )
             )
 
 
