@@ -405,7 +405,7 @@ frameParser version =
 
 zeroId : String
 zeroId =
-    String.fromList (List.repeat 4 (Char.fromCode 0))
+    "\u{0000}\u{0000}\u{0000}\u{0000}"
 
 
 frameHeaderParser : Version -> Parser Context String (Maybe FrameHeader)
