@@ -76,6 +76,15 @@ type Frame
         }
 
 
+type Context
+    = HeaderContext
+    | FramesContext
+    | FrameNameContext
+    | FrameHeaderContext
+    | FrameSizeContext String
+    | FlagsContext String
+
+
 type alias Flags =
     { unsynchronization : Bool
     , extendedHeader : Bool
@@ -107,14 +116,14 @@ tryReadV2 bytes =
         |> Result.mapError errorToString
 
 
-errorToString : Parser.Error context String -> String
+errorToString : Parser.Error Context String -> String
 errorToString error =
     case error of
         Parser.Custom _ e ->
             e
 
-        Parser.InContext _ child ->
-            errorToString child
+        Parser.InContext context child ->
+            contextToString context ++ " > " ++ errorToString child
 
         Parser.OutOfBounds _ ->
             "Out of bounds"
@@ -125,7 +134,29 @@ errorToString error =
                 |> String.join " or "
 
 
-v2Parser : Parser context String ID3v2
+contextToString : { label : Context, start : Int } -> String
+contextToString { label } =
+    case label of
+        HeaderContext ->
+            "Header"
+
+        FramesContext ->
+            "Frames"
+
+        FrameHeaderContext ->
+            "Frame header"
+
+        FrameNameContext ->
+            "Frame name"
+
+        FrameSizeContext id ->
+            "[" ++ id ++ "] frame size"
+
+        FlagsContext id ->
+            "[" ++ id ++ "] frame flags"
+
+
+v2Parser : Parser Context String ID3v2
 v2Parser =
     headerParser
         |> Parser.andThen
@@ -152,6 +183,7 @@ v2Parser =
                             )
                             ( header.innerSize, [] )
                         )
+                    |> Parser.inContext FramesContext
             )
 
 
@@ -163,7 +195,7 @@ v2Parser =
 ------------------------------------------------------------------------------------------------------------
 
 
-headerParser : Parser context String Header
+headerParser : Parser Context String Header
 headerParser =
     Parser.succeed (\version flags size -> ( version, flags, size ))
         |> Parser.ignore identifierParser
@@ -193,6 +225,7 @@ headerParser =
                         , innerSize = size
                         }
             )
+        |> Parser.inContext HeaderContext
 
 
 identifierParser : Parser context String ()
@@ -272,65 +305,82 @@ extendedHeader =
 ------------------------------------------------------------------------------------------------------------
 
 
-frameParser : Version -> Parser context String ( Frame, Int )
+frameParser : Version -> Parser Context String ( Frame, Int )
 frameParser version =
-    Parser.succeed
-        (\id size flags ->
-            log "Parsing frame"
-                { id = id
-                , size = size
-                , flags = flags
-                }
-        )
-        |> Parser.keep
-            (Parser.string 4
-                |> validate
-                    (\id ->
-                        if String.all (\c -> Char.isUpper c || Char.isDigit c) id then
-                            Ok id
+    (Parser.string 4
+        |> validate
+            (\id ->
+                if String.all (\c -> Char.isUpper c || Char.isDigit c) id then
+                    Ok id
 
-                        else
-                            Err <| "Unexpected frame ID: " ++ id
-                    )
+                else
+                    Err <| "Unexpected frame ID: " ++ id
             )
-        |> Parser.keep syncsafeInt32Parser
-        |> Parser.keep (Parser.map2 Tuple.pair syncsafeByteParser syncsafeByteParser)
+        |> Parser.inContext FrameNameContext
+        |> Parser.inContext FrameHeaderContext
+    )
         |> Parser.andThen
-            (\{ id, size, flags } ->
-                let
-                    ( _, lowerFlag ) =
-                        flags
-                in
-                case version of
-                    ID3v2_3 ->
-                        if hasBit 7 lowerFlag then
-                            Parser.fail "Compressed frames are not supported yet"
+            (\id ->
+                Parser.succeed
+                    (\size flags ->
+                        log "Parsing frame"
+                            { id = id
+                            , size = size
+                            , flags = flags
+                            }
+                    )
+                    |> Parser.keep
+                        ((case version of
+                            ID3v2_3 ->
+                                Parser.unsignedInt32 Bytes.BE
 
-                        else if hasBit 6 lowerFlag then
-                            Parser.fail "Encrypted frames are not supported yet"
+                            ID3v2_4 ->
+                                syncsafeInt32Parser
+                         )
+                            |> Parser.inContext (FrameSizeContext id)
+                        )
+                    |> Parser.keep
+                        (Parser.map2 Tuple.pair syncsafeByteParser syncsafeByteParser
+                            |> Parser.inContext (FlagsContext id)
+                        )
+                    |> Parser.inContext FrameHeaderContext
+                    |> Parser.andThen
+                        (\{ size, flags } ->
+                            let
+                                ( _, lowerFlag ) =
+                                    flags
+                            in
+                            case version of
+                                ID3v2_3 ->
+                                    if hasBit 7 lowerFlag then
+                                        Parser.fail "Compressed frames are not supported yet"
 
-                        else
-                            innerFrameParser id size
-                                |> Parser.map (\frame -> ( frame, size + 10 ))
+                                    else if hasBit 6 lowerFlag then
+                                        Parser.fail "Encrypted frames are not supported yet"
 
-                    ID3v2_4 ->
-                        if hasBit 3 lowerFlag then
-                            Parser.fail "Compressed frames are not supported yet"
+                                    else
+                                        innerFrameParser id size
+                                            |> Parser.map (\frame -> ( frame, size + 10 ))
 
-                        else if hasBit 2 lowerFlag then
-                            Parser.fail "Encrypted frames are not supported yet"
+                                ID3v2_4 ->
+                                    if hasBit 3 lowerFlag then
+                                        Parser.fail "Compressed frames are not supported yet"
 
-                        else if hasBit 1 lowerFlag then
-                            Parser.fail "Unsynchronisation is not supported yet"
+                                    else if hasBit 2 lowerFlag then
+                                        Parser.fail "Encrypted frames are not supported yet"
 
-                        else if hasBit 0 lowerFlag then
-                            Parser.fail "Data length indicator not supported yet"
+                                    else if hasBit 1 lowerFlag then
+                                        Parser.fail "Unsynchronisation is not supported yet"
 
-                        else
-                            innerFrameParser id size
-                                |> Parser.map (\frame -> ( frame, size + 10 ))
+                                    else if hasBit 0 lowerFlag then
+                                        Parser.fail "Data length indicator not supported yet"
+
+                                    else
+                                        innerFrameParser id size
+                                            |> Parser.map (\frame -> ( frame, size + 10 ))
+                        )
+                    |> Parser.map (\frame -> log "Parsed frame" frame)
             )
-        |> Parser.map (\frame -> log "Parsed frame" frame)
 
 
 innerFrameParser : String -> Int -> Parser context String Frame
