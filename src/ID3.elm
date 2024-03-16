@@ -83,6 +83,7 @@ type Context
     | FrameHeaderContext
     | FrameSizeContext String
     | FlagsContext String
+    | ExtendedHeaderContext
 
 
 type alias Flags =
@@ -154,6 +155,9 @@ contextToString { label } =
 
         FlagsContext id ->
             "[" ++ id ++ "] frame flags"
+
+        ExtendedHeaderContext ->
+            "Extended header"
 
 
 v2Parser : Parser Context String ID3v2
@@ -287,7 +291,7 @@ flagsParser =
             )
 
 
-extendedHeader : Parser context String { size : Int }
+extendedHeader : Parser Context String { size : Int }
 extendedHeader =
     syncsafeInt32Parser
         |> Parser.andThen
@@ -295,6 +299,7 @@ extendedHeader =
                 Parser.succeed { size = log "extendedHeader size" size }
                     |> Parser.skip (size - 4)
             )
+        |> Parser.inContext ExtendedHeaderContext
 
 
 
@@ -330,13 +335,7 @@ frameParser version =
                             }
                     )
                     |> Parser.keep
-                        ((case version of
-                            ID3v2_3 ->
-                                Parser.unsignedInt32 Bytes.BE
-
-                            ID3v2_4 ->
-                                syncsafeInt32Parser
-                         )
+                        (unsignedInt32 version
                             |> Parser.inContext (FrameSizeContext id)
                         )
                     |> Parser.keep
@@ -537,6 +536,16 @@ prefixedStringParser length =
 --                                                 Utils                                                  --
 --                                                                                                        --
 ------------------------------------------------------------------------------------------------------------
+
+
+unsignedInt32 : Version -> Parser Context String Int
+unsignedInt32 version =
+    case version of
+        ID3v2_3 ->
+            Parser.unsignedInt32 Bytes.BE
+
+        ID3v2_4 ->
+            syncsafeInt32Parser
 
 
 syncsafeInt32Parser : Parser context String Int
