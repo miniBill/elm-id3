@@ -17,6 +17,7 @@ type alias ID3v2 =
 type Frame
     = Comment
         { language : String
+        , description : String
         , value : String
         }
     | ContentType String
@@ -65,6 +66,10 @@ type Frame
     | ISRC String
     | PartOfASet String
     | OriginalAlbum String
+    | UserDefinedTextInformation
+        { description : String
+        , value : String
+        }
     | UnknownFrame
         { id : String
         , raw : Bytes
@@ -365,7 +370,7 @@ frameParser version =
                                             Parser.fail "Encrypted frames are not supported yet"
 
                                         else
-                                            innerFrameParser version id size
+                                            innerFrameParser id size
 
                                     ID3v2_4 ->
                                         if hasBit 3 lowerFlag then
@@ -381,7 +386,7 @@ frameParser version =
                                             Parser.fail "Data length indicator not supported yet"
 
                                         else
-                                            innerFrameParser version id size
+                                            innerFrameParser id size
                         in
                         innerParser
                             |> Parser.map (\frame -> log "Parsed frame" frame)
@@ -439,8 +444,8 @@ frameHeaderParser version =
         |> Parser.inContext FrameHeaderContext
 
 
-innerFrameParser : Version -> String -> Int -> Parser Context String Frame
-innerFrameParser version id size =
+innerFrameParser : String -> Int -> Parser Context String Frame
+innerFrameParser id size =
     (case Dict.get id textInformationFrames of
         Just ctor ->
             Parser.map ctor (prefixedStringParser size)
@@ -448,46 +453,40 @@ innerFrameParser version id size =
         Nothing ->
             case id of
                 "COMM" ->
-                    case version of
-                        ID3v2_3 ->
-                            stringKindParser
-                                |> Parser.andThen
-                                    (\kind ->
-                                        Parser.succeed
-                                            (\language value ->
-                                                Comment
-                                                    { language = language
-                                                    , value = value
-                                                    }
-                                            )
-                                            |> Parser.keep
-                                                (stringParserOfKind UTF8 4
-                                                    |> Parser.inContext COMMLanguageContext
-                                                )
-                                            -- I have no clue what's happening here to be honest
-                                            |> Parser.skip 4
-                                            |> Parser.keep
-                                                (stringParserOfKind kind (size - 7)
-                                                    |> Parser.inContext COMMValueContext
-                                                )
+                    stringKindParser
+                        |> Parser.andThen
+                            (\kind ->
+                                Parser.succeed
+                                    (\language ( description, value ) ->
+                                        Comment
+                                            { language = language
+                                            , description = description
+                                            , value = value
+                                            }
                                     )
+                                    |> Parser.keep
+                                        (Parser.string 3
+                                            |> Parser.inContext COMMLanguageContext
+                                        )
+                                    |> Parser.keep
+                                        (twoStringsParserOfKind kind (size - 4)
+                                            |> Parser.inContext COMMValueContext
+                                        )
+                            )
 
-                        ID3v2_4 ->
-                            Parser.succeed
-                                (\language value ->
-                                    Comment
-                                        { language = language
-                                        , value = value
-                                        }
-                                )
-                                |> Parser.keep
-                                    (prefixedStringParser 4
-                                        |> Parser.inContext COMMLanguageContext
+                "TXXX" ->
+                    stringKindParser
+                        |> Parser.andThen
+                            (\kind ->
+                                Parser.succeed
+                                    (\( description, value ) ->
+                                        UserDefinedTextInformation
+                                            { description = description
+                                            , value = value
+                                            }
                                     )
-                                |> Parser.keep
-                                    (prefixedStringParser (size - 4)
-                                        |> Parser.inContext COMMValueContext
-                                    )
+                                    |> Parser.keep (twoStringsParserOfKind kind (size - 1))
+                            )
 
                 _ ->
                     Parser.bytes size
@@ -571,7 +570,7 @@ prefixedStringParser : Int -> Parser context String String
 prefixedStringParser length =
     stringKindParser
         |> Parser.andThen
-            (\kind -> stringParserOfKind kind length)
+            (\kind -> stringParserOfKind kind (length - 1))
 
 
 type StringKind
@@ -606,9 +605,9 @@ stringKindParser =
 
 stringParserOfKind : StringKind -> Int -> Parser context String String
 stringParserOfKind kind length =
-    case kind of
+    (case kind of
         Iso8859 ->
-            Parser.bytes (length - 1)
+            Parser.bytes length
                 |> Parser.andThen
                     (\bytes ->
                         case Iso8859.Part1.toString bytes of
@@ -622,8 +621,7 @@ stringParserOfKind kind length =
         UTF16 ->
             Parser.succeed Tuple.pair
                 |> Parser.keep (Parser.unsignedInt16 Bytes.LE)
-                |> Parser.keep (Parser.bytes <| length - 5)
-                |> Parser.skip 2
+                |> Parser.keep (Parser.bytes <| length - 4)
                 |> Parser.andThen
                     (\( bom, bytes ) ->
                         let
@@ -642,12 +640,79 @@ stringParserOfKind kind length =
                             Nothing ->
                                 Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
                     )
+                |> Parser.skip 2
 
         UTF16BE ->
             Parser.fail "UTF-16 [BE] is not supported for strings yet"
 
         UTF8 ->
-            Parser.string (length - 1)
+            Parser.string length
+    )
+        |> Parser.map
+            (\str ->
+                if String.endsWith "\u{0000}" str then
+                    String.dropRight 1 str
+
+                else
+                    str
+            )
+
+
+twoStringsParserOfKind : StringKind -> Int -> Parser context String ( String, String )
+twoStringsParserOfKind kind length =
+    let
+        zeroSize : Int
+        zeroSize =
+            case kind of
+                Iso8859 ->
+                    1
+
+                UTF16 ->
+                    2
+
+                UTF16BE ->
+                    2
+
+                UTF8 ->
+                    1
+
+        zeroParser : Parser context error Int
+        zeroParser =
+            if zeroSize == 1 then
+                Parser.unsignedInt8
+
+            else
+                Parser.unsignedInt16 Bytes.BE
+
+        findZero : Parser context error Int
+        findZero =
+            Parser.position
+                |> Parser.andThen
+                    (\position ->
+                        Parser.randomAccess { offset = 0, relativeTo = position } <|
+                            Parser.loop
+                                (\offset ->
+                                    zeroParser
+                                        |> Parser.map
+                                            (\int ->
+                                                if int == 0 then
+                                                    Parser.Done offset
+
+                                                else
+                                                    Parser.Loop (offset + 1)
+                                            )
+                                )
+                                0
+                    )
+    in
+    findZero
+        |> Parser.andThen
+            (\firstZero ->
+                Parser.succeed Tuple.pair
+                    |> Parser.keep (stringParserOfKind kind firstZero)
+                    |> Parser.skip zeroSize
+                    |> Parser.keep (stringParserOfKind kind (length - firstZero - 1))
+            )
 
 
 

@@ -7,6 +7,7 @@ import Hex.Convert
 import ID3 exposing (Frame(..))
 import Sources.Bauchamp128
 import Sources.LenaRaine_Celeste_Prologue
+import Sources.Violin
 import Test exposing (Test, describe, test)
 
 
@@ -16,16 +17,13 @@ suite =
         [ tagsTest "Bauchamp128.mp3"
             Sources.Bauchamp128.raw
             [ Comment
-                { language =
-                    String.fromList
-                        [ Char.fromCode 0
-                        , Char.fromCode 0
-                        , Char.fromCode 0
-                        ]
+                { language = "\u{0000}\u{0000}\u{0000}"
+                , description = ""
                 , value = "Small comment"
                 }
             , Comment
                 { language = "XXX"
+                , description = ""
                 , value = "Small comment"
                 }
             , ContentType "R&B"
@@ -42,12 +40,45 @@ suite =
             , LeadArtist "Lena Raine"
             , TrackNumber "1"
             , Album "Celeste Original Soundtrack"
-            , UnknownFrame { id = "APIC", raw = Bytes.Encode.encode (Bytes.Encode.sequence []) }
+            , apicTag
             , Year "2018"
-            , Comment { language = "eng", value = "Visit http://radicaldreamland.bandcamp.com" }
+            , Comment
+                { language = "eng"
+                , description = ""
+                , value = "Visit http://radicaldreamland.bandcamp.com"
+                }
             , Band "Lena Raine"
             ]
+        , tagsTest "Violin"
+            Sources.Violin.raw
+            [ UserDefinedTextInformation
+                { description = "comment"
+                , value = "https://www.youtube.com/watch?v=xJeBz3HxGsI"
+                }
+            , LeadArtist "Secession Studios"
+            , Title "Powerful Massive And Dramatic Neo Classical Violin Music - The Demand of Man"
+            , RecordingTime "20170117"
+            , UserDefinedTextInformation
+                { description = "description"
+                , value = "From my album - The Untold\nBandcamp ► http://bit.do/Untold_Bandcamp\nSpotify ► http://bit.do/Untold_Spotify\nItunes ► http://bit.do/Untold_Itunes\n\nSecession Studios:\nWebsite      ► http://secessionstudios.com/\nBandcamp ► http://thesecession.bandcamp.com/music\nTwitter        ► https://twitter.com/thesecession\nInstagram   ► https://instagram.com/thesecession/\nFacebook    ► http://www.facebook.com/Secession.Studios"
+                }
+            , UserDefinedTextInformation
+                { description = "synopsis"
+                , value = "From my album - The Untold\nBandcamp ► http://bit.do/Untold_Bandcamp\nSpotify ► http://bit.do/Untold_Spotify\nItunes ► http://bit.do/Untold_Itunes\n\nSecession Studios:\nWebsite      ► http://secessionstudios.com/\nBandcamp ► http://thesecession.bandcamp.com/music\nTwitter        ► https://twitter.com/thesecession\nInstagram   ► https://instagram.com/thesecession/\nFacebook    ► http://www.facebook.com/Secession.Studios"
+                }
+            , UserDefinedTextInformation
+                { description = "purl"
+                , value = "https://www.youtube.com/watch?v=xJeBz3HxGsI"
+                }
+            , SoftwareHardwareAndSettings "Lavf60.3.100"
+            , apicTag
+            ]
         ]
+
+
+apicTag : Frame
+apicTag =
+    UnknownFrame { id = "APIC", raw = Bytes.Encode.encode (Bytes.Encode.sequence []) }
 
 
 tagsTest : String -> String -> List Frame -> Test
