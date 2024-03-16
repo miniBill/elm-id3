@@ -6,7 +6,7 @@ import Expect
 import Hex.Convert
 import ID3 exposing (Frame(..))
 import Sources.Bauchamp128
-import Sources.CelestePrologue
+import Sources.LenaRaine_Celeste_Prologue
 import Test exposing (Test, describe, test)
 
 
@@ -37,7 +37,7 @@ suite =
             , LeadArtist "Bauchamp"
             ]
         , tagsTest "Celeste - Prologue"
-            Sources.CelestePrologue.raw
+            Sources.LenaRaine_Celeste_Prologue.raw
             [ Title "Prologue"
             , LeadArtist "Lena Raine"
             , TrackNumber "1"
