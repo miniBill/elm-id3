@@ -38,22 +38,64 @@ suite =
             ]
         , tagsTest "Celeste - Prologue"
             Sources.CelestePrologue.raw
-            []
+            [ Title "Prologue"
+            , LeadArtist "Lena Raine"
+            , TrackNumber "1"
+            , Album "Celeste Original Soundtrack"
+            , UnknownFrame { id = "APIC", raw = Bytes.Encode.encode (Bytes.Encode.sequence []) }
+            , Year "2018"
+            , Comment { language = "eng", value = "Visit http://radicaldreamland.bandcamp.com" }
+            , Band "Lena Raine"
+            ]
         ]
 
 
 tagsTest : String -> String -> List Frame -> Test
-tagsTest name raw frames =
+tagsTest name raw expectedFrames =
     test name <|
         \_ ->
-            raw
-                |> String.split "\n"
-                |> String.concat
-                |> String.trim
-                |> Hex.Convert.toBytes
-                |> Maybe.withDefault emptyBytes
-                |> ID3.tryReadV2
-                |> Expect.equal (Ok { frames = frames })
+            let
+                maybeFrames =
+                    raw
+                        |> String.split "\n"
+                        |> String.concat
+                        |> String.trim
+                        |> Hex.Convert.toBytes
+                        |> Maybe.withDefault emptyBytes
+                        |> ID3.tryReadV2
+
+                extractUnknownId frame =
+                    case frame of
+                        UnknownFrame { id } ->
+                            Just id
+
+                        _ ->
+                            Nothing
+            in
+            case maybeFrames of
+                Err e ->
+                    Expect.fail e
+
+                Ok { frames } ->
+                    Expect.all
+                        [ \_ ->
+                            frames
+                                |> List.filter
+                                    (\frame -> extractUnknownId frame == Nothing)
+                                |> Expect.equal
+                                    (expectedFrames
+                                        |> List.filter
+                                            (\frame -> extractUnknownId frame == Nothing)
+                                    )
+                        , \_ ->
+                            frames
+                                |> List.filterMap extractUnknownId
+                                |> Expect.equal
+                                    (expectedFrames
+                                        |> List.filterMap extractUnknownId
+                                    )
+                        ]
+                        ()
 
 
 emptyBytes : Bytes

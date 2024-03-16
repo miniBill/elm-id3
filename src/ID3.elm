@@ -111,7 +111,9 @@ type Context
     | FlagsContext String
     | ExtendedHeaderContext
     | FrameContext
-    | InnerFrameContext
+    | InnerFrameContext String
+    | COMMLanguageContext
+    | COMMValueContext
 
 
 log : String -> a -> a
@@ -135,8 +137,8 @@ errorToString error =
         Parser.InContext context child ->
             contextToString context ++ " > " ++ errorToString child
 
-        Parser.OutOfBounds _ ->
-            "Out of bounds"
+        Parser.OutOfBounds { at, bytes } ->
+            "Out of bounds - reading " ++ String.fromInt bytes ++ " at " ++ String.fromInt at
 
         Parser.BadOneOf _ children ->
             children
@@ -171,8 +173,14 @@ contextToString { label } =
         ExtendedHeaderContext ->
             "Extended header"
 
-        InnerFrameContext ->
-            "Inner frame"
+        InnerFrameContext id ->
+            "[" ++ id ++ "] content"
+
+        COMMLanguageContext ->
+            "Language"
+
+        COMMValueContext ->
+            "Value"
 
 
 v2Parser : Parser Context String ID3v2
@@ -193,11 +201,18 @@ v2Parser =
                                 else
                                     frameParser header.version
                                         |> Parser.map
-                                            (\( frame, frameLength ) ->
-                                                ( remaining - frameLength
-                                                , frame :: acc
-                                                )
-                                                    |> Parser.Loop
+                                            (\maybeFrame ->
+                                                case maybeFrame of
+                                                    Nothing ->
+                                                        acc
+                                                            |> List.reverse
+                                                            |> Parser.Done
+
+                                                    Just ( frame, frameLength ) ->
+                                                        ( remaining - frameLength
+                                                        , frame :: acc
+                                                        )
+                                                            |> Parser.Loop
                                             )
                             )
                             ( header.innerSize, [] )
@@ -325,58 +340,71 @@ extendedHeader =
 ------------------------------------------------------------------------------------------------------------
 
 
-frameParser : Version -> Parser Context String ( Frame, Int )
+frameParser : Version -> Parser Context String (Maybe ( Frame, Int ))
 frameParser version =
     frameHeaderParser version
         |> Parser.andThen
-            (\{ id, size, flags } ->
-                let
-                    ( _, lowerFlag ) =
-                        flags
+            (\maybeHeader ->
+                case maybeHeader of
+                    Nothing ->
+                        Parser.succeed Nothing
 
-                    innerParser : Parser Context String Frame
-                    innerParser =
-                        case version of
-                            ID3v2_3 ->
-                                if hasBit 7 lowerFlag then
-                                    Parser.fail "Compressed frames are not supported yet"
+                    Just { id, size, flags } ->
+                        let
+                            ( _, lowerFlag ) =
+                                flags
 
-                                else if hasBit 6 lowerFlag then
-                                    Parser.fail "Encrypted frames are not supported yet"
+                            innerParser : Parser Context String Frame
+                            innerParser =
+                                case version of
+                                    ID3v2_3 ->
+                                        if hasBit 7 lowerFlag then
+                                            Parser.fail "Compressed frames are not supported yet"
 
-                                else
-                                    innerFrameParser id size
+                                        else if hasBit 6 lowerFlag then
+                                            Parser.fail "Encrypted frames are not supported yet"
 
-                            ID3v2_4 ->
-                                if hasBit 3 lowerFlag then
-                                    Parser.fail "Compressed frames are not supported yet"
+                                        else
+                                            innerFrameParser version id size
 
-                                else if hasBit 2 lowerFlag then
-                                    Parser.fail "Encrypted frames are not supported yet"
+                                    ID3v2_4 ->
+                                        if hasBit 3 lowerFlag then
+                                            Parser.fail "Compressed frames are not supported yet"
 
-                                else if hasBit 1 lowerFlag then
-                                    Parser.fail "Unsynchronisation is not supported yet"
+                                        else if hasBit 2 lowerFlag then
+                                            Parser.fail "Encrypted frames are not supported yet"
 
-                                else if hasBit 0 lowerFlag then
-                                    Parser.fail "Data length indicator not supported yet"
+                                        else if hasBit 1 lowerFlag then
+                                            Parser.fail "Unsynchronisation is not supported yet"
 
-                                else
-                                    innerFrameParser id size
-                in
-                innerParser
-                    |> Parser.map (\frame -> log "Parsed frame" frame)
-                    |> Parser.map (\frame -> ( frame, size + 10 ))
+                                        else if hasBit 0 lowerFlag then
+                                            Parser.fail "Data length indicator not supported yet"
+
+                                        else
+                                            innerFrameParser version id size
+                        in
+                        innerParser
+                            |> Parser.map (\frame -> log "Parsed frame" frame)
+                            |> Parser.map (\frame -> Just ( frame, size + 10 ))
             )
         |> Parser.inContext FrameContext
 
 
-frameHeaderParser : Version -> Parser Context String FrameHeader
+zeroId : String
+zeroId =
+    String.fromList (List.repeat 4 (Char.fromCode 0))
+
+
+frameHeaderParser : Version -> Parser Context String (Maybe FrameHeader)
 frameHeaderParser version =
     (Parser.string 4
         |> validate
             (\id ->
-                if String.all (\c -> Char.isUpper c || Char.isDigit c) id then
-                    Ok id
+                if id == zeroId then
+                    Ok Nothing
+
+                else if String.all (\c -> Char.isUpper c || Char.isDigit c) id then
+                    Ok (Just id)
 
                 else
                     Err <| "Unexpected frame ID: " ++ id
@@ -384,29 +412,35 @@ frameHeaderParser version =
         |> Parser.inContext FrameNameContext
     )
         |> Parser.andThen
-            (\id ->
-                Parser.succeed
-                    (\size flags ->
-                        log "Parsing frame"
-                            { id = id
-                            , size = size
-                            , flags = flags
-                            }
-                    )
-                    |> Parser.keep
-                        (unsignedInt32 version
-                            |> Parser.inContext (FrameSizeContext id)
-                        )
-                    |> Parser.keep
-                        (Parser.map2 Tuple.pair syncsafeByteParser syncsafeByteParser
-                            |> Parser.inContext (FlagsContext id)
-                        )
+            (\maybeId ->
+                case maybeId of
+                    Nothing ->
+                        Parser.succeed Nothing
+
+                    Just id ->
+                        Parser.succeed
+                            (\size flags ->
+                                log "Parsing frame"
+                                    { id = id
+                                    , size = size
+                                    , flags = flags
+                                    }
+                                    |> Just
+                            )
+                            |> Parser.keep
+                                (unsignedInt32 version
+                                    |> Parser.inContext (FrameSizeContext id)
+                                )
+                            |> Parser.keep
+                                (Parser.map2 Tuple.pair syncsafeByteParser syncsafeByteParser
+                                    |> Parser.inContext (FlagsContext id)
+                                )
             )
         |> Parser.inContext FrameHeaderContext
 
 
-innerFrameParser : String -> Int -> Parser Context String Frame
-innerFrameParser id size =
+innerFrameParser : Version -> String -> Int -> Parser Context String Frame
+innerFrameParser version id size =
     (case Dict.get id textInformationFrames of
         Just ctor ->
             Parser.map ctor (prefixedStringParser size)
@@ -414,15 +448,46 @@ innerFrameParser id size =
         Nothing ->
             case id of
                 "COMM" ->
-                    Parser.succeed
-                        (\language value ->
-                            Comment
-                                { language = language
-                                , value = value
-                                }
-                        )
-                        |> Parser.keep (prefixedStringParser 4)
-                        |> Parser.keep (prefixedStringParser <| size - 4)
+                    case version of
+                        ID3v2_3 ->
+                            stringKindParser
+                                |> Parser.andThen
+                                    (\kind ->
+                                        Parser.succeed
+                                            (\language value ->
+                                                Comment
+                                                    { language = language
+                                                    , value = value
+                                                    }
+                                            )
+                                            |> Parser.keep
+                                                (stringParserOfKind UTF8 4
+                                                    |> Parser.inContext COMMLanguageContext
+                                                )
+                                            -- I have no clue what's happening here to be honest
+                                            |> Parser.skip 4
+                                            |> Parser.keep
+                                                (stringParserOfKind kind (size - 7)
+                                                    |> Parser.inContext COMMValueContext
+                                                )
+                                    )
+
+                        ID3v2_4 ->
+                            Parser.succeed
+                                (\language value ->
+                                    Comment
+                                        { language = language
+                                        , value = value
+                                        }
+                                )
+                                |> Parser.keep
+                                    (prefixedStringParser 4
+                                        |> Parser.inContext COMMLanguageContext
+                                    )
+                                |> Parser.keep
+                                    (prefixedStringParser (size - 4)
+                                        |> Parser.inContext COMMValueContext
+                                    )
 
                 _ ->
                     Parser.bytes size
@@ -434,7 +499,7 @@ innerFrameParser id size =
                                     |> UnknownFrame
                             )
     )
-        |> Parser.inContext InnerFrameContext
+        |> Parser.inContext (InnerFrameContext id)
 
 
 textInformationFrames : Dict String (String -> Frame)
@@ -504,55 +569,85 @@ textInformationFrames =
 -}
 prefixedStringParser : Int -> Parser context String String
 prefixedStringParser length =
-    Parser.unsignedInt8
+    stringKindParser
         |> Parser.andThen
-            (\kind ->
-                case kind of
-                    0 ->
-                        Parser.bytes (length - 1)
-                            |> Parser.andThen
-                                (\bytes ->
-                                    case Iso8859.Part1.toString bytes of
-                                        Just decoded ->
-                                            Parser.succeed decoded
+            (\kind -> stringParserOfKind kind length)
 
-                                        Nothing ->
-                                            Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as ISO8859-1"
-                                )
+
+type StringKind
+    = Iso8859
+    | UTF16
+    | UTF16BE
+    | UTF8
+
+
+stringKindParser : Parser context String StringKind
+stringKindParser =
+    Parser.unsignedInt8
+        |> validate
+            (\rawKind ->
+                case rawKind of
+                    0 ->
+                        Ok Iso8859
 
                     1 ->
-                        Parser.succeed Tuple.pair
-                            |> Parser.keep (Parser.unsignedInt16 Bytes.LE)
-                            |> Parser.keep (Parser.bytes <| length - 5)
-                            |> Parser.skip 2
-                            |> Parser.andThen
-                                (\( bom, bytes ) ->
-                                    let
-                                        endianess : Bytes.Endianness
-                                        endianess =
-                                            if bom == 0xFEFF then
-                                                Bytes.LE
-
-                                            else
-                                                Bytes.BE
-                                    in
-                                    case String.UTF16.toString endianess bytes of
-                                        Just decoded ->
-                                            Parser.succeed decoded
-
-                                        Nothing ->
-                                            Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
-                                )
+                        Ok UTF16
 
                     2 ->
-                        Parser.fail "UTF-16 [BE] is not supported for strings yet"
+                        Ok UTF16BE
 
                     3 ->
-                        Parser.string (length - 1)
+                        Ok UTF8
 
                     _ ->
-                        Parser.fail <| "Unexpected encoding byte for string: " ++ String.fromInt kind
+                        Err <| "Unexpected encoding byte for string: " ++ String.fromInt rawKind
             )
+
+
+stringParserOfKind : StringKind -> Int -> Parser context String String
+stringParserOfKind kind length =
+    case kind of
+        Iso8859 ->
+            Parser.bytes (length - 1)
+                |> Parser.andThen
+                    (\bytes ->
+                        case Iso8859.Part1.toString bytes of
+                            Just decoded ->
+                                Parser.succeed decoded
+
+                            Nothing ->
+                                Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as ISO8859-1"
+                    )
+
+        UTF16 ->
+            Parser.succeed Tuple.pair
+                |> Parser.keep (Parser.unsignedInt16 Bytes.LE)
+                |> Parser.keep (Parser.bytes <| length - 5)
+                |> Parser.skip 2
+                |> Parser.andThen
+                    (\( bom, bytes ) ->
+                        let
+                            endianess : Bytes.Endianness
+                            endianess =
+                                if bom == 0xFEFF then
+                                    Bytes.LE
+
+                                else
+                                    Bytes.BE
+                        in
+                        case String.UTF16.toString endianess bytes of
+                            Just decoded ->
+                                Parser.succeed decoded
+
+                            Nothing ->
+                                Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
+                    )
+
+        UTF16BE ->
+            Parser.fail "UTF-16 [BE] is not supported for strings yet"
+
+        UTF8 ->
+            Parser.string (length - 1)
 
 
 
