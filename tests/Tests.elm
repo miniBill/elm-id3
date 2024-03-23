@@ -7,6 +7,7 @@ import Hex.Convert
 import ID3 exposing (Frame(..))
 import Sources.Bauchamp128
 import Sources.LenaRaine_Celeste_Prologue
+import Sources.Misc
 import Sources.Violin
 import Test exposing (Test, describe, test)
 
@@ -73,6 +74,15 @@ suite =
             , SoftwareHardwareAndSettings "Lavf60.3.100"
             , apicTag
             ]
+        , tagsTest "Misc"
+            Sources.Misc.bytes
+            [ Title "title" ]
+        , tagsTest "Misc - \"unsupported\""
+            Sources.Misc.bytesUnsupported
+            [ Title "title", RecordingTime "2024", Year "2024" ]
+        , tagsTest "Misc - v2.2"
+            Sources.Misc.bytesv2
+            []
         ]
 
 
