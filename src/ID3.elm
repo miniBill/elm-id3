@@ -650,7 +650,17 @@ stringParserOfKind kind length =
                     )
 
         UTF16BE ->
-            Parser.fail "UTF-16 [BE] is not supported for strings yet"
+            Parser.succeed identity
+                |> Parser.keep (Parser.bytes length)
+                |> Parser.andThen
+                    (\bytes ->
+                        case String.UTF16.toString Bytes.BE bytes of
+                            Just decoded ->
+                                Parser.succeed decoded
+
+                            Nothing ->
+                                Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
+                    )
 
         UTF8 ->
             Parser.string length
