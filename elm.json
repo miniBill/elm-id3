@@ -4,7 +4,7 @@
     "summary": "Extract ID3 tags from files",
     "license": "BSD-3-Clause",
     "version": "1.0.0",
-    "exposed-modules": [],
+    "exposed-modules": ["ID3"],
     "elm-version": "0.19.0 <= v < 0.20.0",
     "dependencies": {
         "elm/bytes": "1.0.8 <= v < 2.0.0",
