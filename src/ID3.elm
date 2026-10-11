@@ -284,7 +284,7 @@ identifierParser =
                     Ok ()
 
                 else
-                    Err <| "ID3 not found, found " ++ tag ++ " instead"
+                    Err ("ID3 not found, found " ++ tag ++ " instead")
             )
 
 
@@ -301,7 +301,7 @@ majorVersionParser =
                         Ok ID3v2_4
 
                     _ ->
-                        Err <| "This library currently supports ID3v2.3 and ID3v2.4 only, found ID3v2." ++ String.fromInt major
+                        Err ("This library currently supports ID3v2.3 and ID3v2.4 only, found ID3v2." ++ String.fromInt major)
             )
 
 
@@ -420,7 +420,7 @@ frameHeaderParser version =
                     Ok (Just id)
 
                 else
-                    Err <| "Unexpected frame ID: " ++ id
+                    Err ("Unexpected frame ID: " ++ id)
             )
         |> Parser.inContext FrameNameContext
     )
@@ -607,7 +607,7 @@ stringKindParser =
                         Ok UTF8
 
                     _ ->
-                        Err <| "Unexpected encoding byte for string: " ++ String.fromInt rawKind
+                        Err ("Unexpected encoding byte for string: " ++ String.fromInt rawKind)
             )
 
 
@@ -623,13 +623,13 @@ stringParserOfKind kind length =
                                 Parser.succeed decoded
 
                             Nothing ->
-                                Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as ISO8859-1"
+                                Parser.fail ("Failed to parse " ++ Hex.Convert.toString bytes ++ " as ISO8859-1")
                     )
 
         UTF16 ->
             Parser.succeed Tuple.pair
                 |> Parser.keep (Parser.unsignedInt16 Bytes.LE)
-                |> Parser.keep (Parser.bytes <| length - 2)
+                |> Parser.keep (Parser.bytes (length - 2))
                 |> Parser.andThen
                     (\( bom, bytes ) ->
                         let
@@ -646,7 +646,7 @@ stringParserOfKind kind length =
                                 Parser.succeed decoded
 
                             Nothing ->
-                                Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
+                                Parser.fail ("Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16")
                     )
 
         UTF16BE ->
@@ -659,7 +659,7 @@ stringParserOfKind kind length =
                                 Parser.succeed decoded
 
                             Nothing ->
-                                Parser.fail <| "Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16"
+                                Parser.fail ("Failed to parse " ++ Hex.Convert.toString bytes ++ " as UTF16")
                     )
 
         UTF8 ->
@@ -708,20 +708,21 @@ twoStringsParserOfKind kind length =
             Parser.position
                 |> Parser.andThen
                     (\position ->
-                        Parser.randomAccess { offset = 0, relativeTo = position } <|
-                            Parser.loop
+                        Parser.randomAccess { offset = 0, relativeTo = position }
+                            (Parser.loop
                                 (\offset ->
                                     zeroParser
                                         |> Parser.map
                                             (\int ->
                                                 if int == 0 || offset == length then
-                                                    Parser.Done <| Debug.log "zero at offset" <| offset * zeroSize
+                                                    Parser.Done (Debug.log "zero at offset" (offset * zeroSize))
 
                                                 else
                                                     Parser.Loop (offset + 1)
                                             )
                                 )
                                 0
+                            )
                     )
     in
     findZero
@@ -788,9 +789,9 @@ syncsafeByteParser =
                     let
                         byteString : String
                         byteString =
-                            Hex.Convert.toString <| Bytes.Encode.encode <| Bytes.Encode.unsignedInt8 byte
+                            Hex.Convert.toString (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 byte))
                     in
-                    Err <| "Byte should have been less than 0x80: " ++ byteString
+                    Err ("Byte should have been less than 0x80: " ++ byteString)
             )
 
 
